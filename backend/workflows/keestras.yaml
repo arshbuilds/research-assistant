@@ -1,0 +1,155 @@
+id: test-ai-agent
+namespace: hackathon
+
+tasks:
+  - id: decide_sources
+    type: io.kestra.plugin.ai.agent.AIAgent
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      apiKey: "{{ kv('GEMINI_API_KEY') }}"
+      modelName: gemini-2.5-flash
+    systemMessage: |
+      You are a JSON API. You ONLY output valid JSON, nothing else.
+      Analyze research topics and decide which databases to query.
+      ArXiv is best for: Computer Science, Physics, Mathematics, Statistics
+      Semantic Scholar is best for: Medicine, Biology, Psychology, Social Sciences
+      
+      Output format (ONLY this, no other text):
+      {"arxiv": true, "semantic_scholar": false, "reasoning": "your explanation"}
+    prompt: |
+      Research topic: "{{ inputs.topic }}"
+      Which databases? Output ONLY JSON.
+
+  - id: search_arxiv
+    type: io.kestra.plugin.scripts.python.Script
+    docker:
+      image: python:3.12
+    beforeCommands:
+      - pip install requests
+    outputFiles:
+      - arxiv_papers.json
+    env:
+      DECISION: "{{ outputs.decide_sources.textOutput }}"
+    script: |
+      import requests
+      import xml.etree.ElementTree as ET
+      import json
+      import os
+      import re
+      
+      # Get decision and extract JSON
+      decision_raw = os.environ.get('DECISION', '{}')
+      print(f"Raw decision: {decision_raw}")
+      
+      # Try to extract JSON from the response
+      try:
+          # Try direct parse first
+          decision_json = json.loads(decision_raw)
+      except:
+          # Extract JSON from text using regex
+          json_match = re.search(r'\{[^}]+\}', decision_raw)
+          if json_match:
+              decision_json = json.loads(json_match.group())
+          else:
+              print("Could not parse decision, running ArXiv by default")
+              decision_json = {"arxiv": True}
+      
+      print(f"Parsed decision: {decision_json}")
+      
+      if not decision_json.get('arxiv', False):
+          print("⏭️  Skipped ArXiv (AI Agent decision)")
+          with open('arxiv_papers.json', 'w') as f:
+              json.dump([], f)
+          exit(0)
+      
+      query = "{{ inputs.topic }}"
+      url = f"http://export.arxiv.org/api/query?search_query=all:{query}&max_results=3"
+      response = requests.get(url)
+      root = ET.fromstring(response.content)
+      
+      papers = []
+      for entry in root.findall('{http://www.w3.org/2005/Atom}entry'):
+          papers.append({
+              'title': entry.find('{http://www.w3.org/2005/Atom}title').text.strip(),
+              'abstract': entry.find('{http://www.w3.org/2005/Atom}summary').text.strip()[:200],
+              'link': entry.find('{http://www.w3.org/2005/Atom}id').text,
+              'source': 'ArXiv'
+          })
+      
+      with open('arxiv_papers.json', 'w') as f:
+          json.dump(papers, f)
+      
+      print(f"✅ Found {len(papers)} papers from ArXiv")
+      for p in papers:
+          print(f"  📄 {p['title']}")
+
+  - id: search_semantic_scholar
+    type: io.kestra.plugin.scripts.python.Script
+    docker:
+      image: python:3.12
+    beforeCommands:
+      - pip install requests
+    outputFiles:
+      - semantic_papers.json
+    env:
+      DECISION: "{{ outputs.decide_sources.textOutput }}"
+    script: |
+      import requests
+      import json
+      import os
+      import re
+      
+      # Get decision and extract JSON
+      decision_raw = os.environ.get('DECISION', '{}')
+      
+      try:
+          decision_json = json.loads(decision_raw)
+      except:
+          json_match = re.search(r'\{[^}]+\}', decision_raw)
+          if json_match:
+              decision_json = json.loads(json_match.group())
+          else:
+              decision_json = {"semantic_scholar": True}
+      
+      print(f"Parsed decision: {decision_json}")
+      
+      if not decision_json.get('semantic_scholar', False):
+          print("⏭️  Skipped Semantic Scholar (AI Agent decision)")
+          with open('semantic_papers.json', 'w') as f:
+              json.dump([], f)
+          exit(0)
+      
+      query = "{{ inputs.topic }}"
+      url = "https://api.semanticscholar.org/graph/v1/paper/search"
+      params = {
+          'query': query,
+          'limit': 3,
+          'fields': 'title,abstract,url,year,citationCount'
+      }
+      
+      response = requests.get(url, params=params)
+      data = response.json()
+      
+      papers = []
+      for item in data.get('data', []):
+          if item.get('abstract'):
+              papers.append({
+                  'title': item['title'],
+                  'abstract': item['abstract'][:200],
+                  'link': item.get('url', ''),
+                  'year': item.get('year'),
+                  'citations': item.get('citationCount', 0),
+                  'source': 'Semantic Scholar'
+              })
+      
+      with open('semantic_papers.json', 'w') as f:
+          json.dump(papers, f)
+      
+      print(f"✅ Found {len(papers)} papers from Semantic Scholar")
+      for p in papers:
+          print(f"  📄 {p['title']} ({p['citations']} citations)")
+
+inputs:
+  - id: topic
+    type: STRING
+    defaults: "transformer neural networks"
