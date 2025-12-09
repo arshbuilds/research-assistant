@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+env/
+
+# Model files (too large for git)
+*.gguf
+*.bin
+*.safetensors
+
+# Environment variables
+.env
+
+# Kestra data
+kestra-data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
