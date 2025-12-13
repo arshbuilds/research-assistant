@@ -1,6 +1,12 @@
 id: test-ai-agent
 namespace: hackathon
 
+triggers:
+  - id: webhook_trigger
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: search-papers  
+
+
 tasks:
   - id: decide_sources
     type: io.kestra.plugin.ai.agent.AIAgent
